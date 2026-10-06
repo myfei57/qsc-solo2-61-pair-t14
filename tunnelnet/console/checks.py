@@ -77,4 +77,17 @@ def run_checks(rt: "Runtime") -> list[dict[str, str]]:
     )
 
     checks.append({"name": "audit", "status": "ok", "detail": f"records={rt.audit.count()}"})
+
+    pending = rt.reorg.pending_request()
+    checks.append(
+        {
+            "name": "reorg",
+            "status": "warn" if pending is not None else "ok",
+            "detail": (
+                f"current=v{rt.reorg.current_version()} pending={pending.status}:{pending.request_id}"
+                if pending is not None
+                else f"current=v{rt.reorg.current_version()} stable"
+            ),
+        }
+    )
     return checks

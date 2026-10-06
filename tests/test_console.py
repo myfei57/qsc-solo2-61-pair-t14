@@ -49,13 +49,27 @@ class ConsoleCase(unittest.TestCase):
         status, health = self.call("GET", "/api/health")
         self.assertEqual(status, 200)
         self.assertEqual(health["status"], "ok")
-        self.assertEqual(health["kinds"], [])
+        # The initial zone layout (v1) and its current pointer are bootstrapped
+        # into the durable ledger on first construction.
+        self.assertEqual(health["kinds"], ["zone_layout", "zone_pointer"])
 
         status, checks = self.call("GET", "/api/health/checks")
         self.assertEqual(status, 200)
         self.assertEqual(
             {check["name"] for check in checks["checks"]},
-            {"store", "access", "drain", "ventilation", "fire", "patrol", "quota", "cables", "environment", "audit"},
+            {
+                "store",
+                "access",
+                "drain",
+                "ventilation",
+                "fire",
+                "patrol",
+                "quota",
+                "cables",
+                "environment",
+                "reorg",
+                "audit",
+            },
         )
 
         status, snapshot = self.call("GET", "/api/snapshot")
@@ -77,6 +91,7 @@ class ConsoleCase(unittest.TestCase):
                 "quota",
                 "cables",
                 "suppression",
+                "reorg",
                 "audit",
             },
         )

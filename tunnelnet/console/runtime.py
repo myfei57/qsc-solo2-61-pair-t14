@@ -12,6 +12,7 @@ from tunnelnet.fire import FireService
 from tunnelnet.ns import Registry as NamespaceRegistry
 from tunnelnet.patrol import PatrolService
 from tunnelnet.quota import QuotaService
+from tunnelnet.reorg import ReorgCoordinator
 from tunnelnet.store import Store
 from tunnelnet.vent import VentService
 
@@ -41,3 +42,9 @@ class Runtime:
         self.power_book = PowerBook()
         self.quota = QuotaService(self.cabins, self.power_book)
         self.audit = AuditRegistry()
+        # The coordinator is constructed last because it owns the only atomic
+        # transition across partitions / environment routing / patrol route.
+        # Its initial layout (v1) is captured by the server after seeding.
+        self.reorg = ReorgCoordinator(
+            store, self.cabins, self.partitions, self.env, self.patrol, self.audit
+        )

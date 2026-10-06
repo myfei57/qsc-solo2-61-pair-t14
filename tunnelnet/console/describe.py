@@ -30,5 +30,10 @@ def collect(rt: "Runtime") -> dict[str, str]:
         "quota": rt.quota.describe(),
         "cables": rt.cables.describe(),
         "suppression": rt.suppression.describe(),
+        "reorg": (
+            f"reorg current=v{rt.reorg.current_version()} "
+            f"confirmed=v{rt.reorg.last_confirmed().version if rt.reorg.last_confirmed() else 0} "
+            f"versions={len(rt.reorg.versions())}"
+        ),
         "audit": rt.audit.describe(),
     }

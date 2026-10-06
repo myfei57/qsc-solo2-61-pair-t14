@@ -13,6 +13,7 @@ from tunnelnet.fire import Detector
 from tunnelnet.ns import Stage, control_chain
 from tunnelnet.reporting import audit_export, telemetry_export, to_csv
 from tunnelnet.reporting import store_export as store_csv_export
+from tunnelnet.reorg import ReorgConflict
 from tunnelnet.store import export_all, export_kind, list_approvals, revoke_approval, summarize
 
 from . import checks, ops
@@ -262,6 +263,7 @@ def env_overview(server: "Server", request: Request) -> Response:
             "alarms": [alarm.as_dict() for alarm in env.alarms()],
             "sensor_1_cabin": env.route_alarm("sensor-1"),
             "threshold": env.threshold(),
+            "layout_version": env.layout_version(),
         }
     )
 
@@ -312,11 +314,16 @@ def env_sample(server: "Server", request: Request) -> Response:
 
 
 def env_partition(server: "Server", request: Request) -> Response:
-    revision = server.runtime.env.repartition(
+    rt = server.runtime
+    layout = rt.reorg.record_hotfix(
         request.str_field("partition_id"), request.str_field("cabin_id")
     )
     return json_response(
-        {"revision": revision, "sensor_1_cabin": server.runtime.env.route_alarm("sensor-1")}
+        {
+            "revision": rt.partitions.revision(),
+            "version": layout.version,
+            "sensor_1_cabin": rt.env.route_alarm("sensor-1"),
+        }
     )
 
 
@@ -545,6 +552,34 @@ def patrol_rebuild(server: "Server", request: Request) -> Response:
     return json_response({"route": [checkpoint.as_dict() for checkpoint in route]})
 
 
+def patrol_round_end(server: "Server", request: Request) -> Response:
+    """Close the active inspection round; an armed reorg activates atomically."""
+
+    rt = server.runtime
+    at = request.str_field("at")
+    activated = rt.reorg.close_round(at)
+    return json_response(
+        {
+            "round": rt.patrol.round_number(),
+            "active": rt.patrol.round_active(),
+            "route_ids": rt.patrol.route_ids(),
+            "activated": None if activated is None else activated.as_dict(),
+            "current_version": rt.reorg.current_version(),
+        }
+    )
+
+
+def patrol_rounds(server: "Server", request: Request) -> Response:
+    patrol = server.runtime.patrol
+    return json_response(
+        {
+            "active_round": patrol.round_number(),
+            "round_active": patrol.round_active(),
+            "rounds": [rnd.as_dict() for rnd in patrol.rounds()],
+        }
+    )
+
+
 def patrol_due(server: "Server", request: Request) -> Response:
     patrol = server.runtime.patrol
     return json_response({"due": patrol.set_due(request.str_field("cabin_id"), request.str_field("due"))})
@@ -735,6 +770,154 @@ def suppression_list(server: "Server", request: Request) -> Response:
 def suppression_clear(server: "Server", request: Request) -> Response:
     server.runtime.suppression.clear()
     return json_response({"cleared": True, "count": server.runtime.suppression.count()})
+
+
+# ---------------------------------------------------------------------------
+# Atomic zone reorganisations
+# ---------------------------------------------------------------------------
+
+
+def _manifest_from_request(request: Request) -> dict[str, object]:
+    raw = request.payload.get("manifest")
+    if isinstance(raw, dict):
+        return raw
+    # Convenience form: partitions/route/sensors posted at the top level.
+    if "partitions" in request.payload or "route" in request.payload:
+        return {
+            "partitions": request.payload.get("partitions", {}),
+            "route": request.payload.get("route", []),
+            "sensors": request.payload.get("sensors", {}),
+        }
+    raise RequestError(400, "manifest is required")
+
+
+def reorg_state(server: "Server", request: Request) -> Response:
+    coordinator = server.runtime.reorg
+    confirmed = coordinator.last_confirmed()
+    return json_response(
+        {
+            **coordinator.state(),
+            "last_confirmed": 0 if confirmed is None else confirmed.version,
+            "current": coordinator.current_layout().as_dict(),
+        }
+    )
+
+
+def reorg_snapshot(server: "Server", request: Request) -> Response:
+    return json_response(server.runtime.reorg.manifest_snapshot())
+
+
+def reorg_submit(server: "Server", request: Request) -> Response:
+    rt = server.runtime
+    request_id = request.str_field("request_id")
+    if not request_id:
+        raise RequestError(400, "request_id is required")
+    manifest = _manifest_from_request(request)
+    effective = request.str_field("effective", "round_boundary")
+    if effective not in ("immediate", "round_boundary"):
+        raise RequestError(400, "effective must be 'immediate' or 'round_boundary'")
+    try:
+        reorg_request, replay = rt.reorg.submit(
+            request_id,
+            manifest,
+            effective=effective,
+            reason=request.str_field("reason"),
+            base_version=request.int_field("base_version", 0),
+            at=request.str_field("at"),
+        )
+    except ReorgConflict as exc:
+        raise RequestError(409, str(exc)) from exc
+    return json_response(
+        {
+            "replay": replay,
+            "request": reorg_request.as_dict(),
+            "current_version": rt.reorg.current_version(),
+            "active_round": rt.patrol.round_number(),
+        }
+    )
+
+
+def reorg_activate(server: "Server", request: Request) -> Response:
+    request_id = request.str_field("request_id")
+    if not request_id:
+        raise RequestError(400, "request_id is required")
+    try:
+        reorg_request = server.runtime.reorg.activate_now(request_id, request.str_field("at"))
+    except ReorgConflict as exc:
+        raise RequestError(409, str(exc)) from exc
+    return json_response({"request": reorg_request.as_dict()})
+
+
+def reorg_confirm(server: "Server", request: Request) -> Response:
+    request_id = request.str_field("request_id")
+    if not request_id:
+        raise RequestError(400, "request_id is required")
+    try:
+        reorg_request = server.runtime.reorg.confirm(request_id, request.str_field("at"))
+    except ReorgConflict as exc:
+        raise RequestError(409, str(exc)) from exc
+    return json_response({"request": reorg_request.as_dict()})
+
+
+def reorg_rollback(server: "Server", request: Request) -> Response:
+    request_id = request.str_field("request_id")
+    if not request_id:
+        raise RequestError(400, "request_id is required")
+    try:
+        reorg_request = server.runtime.reorg.rollback(request_id, request.str_field("at"))
+    except ReorgConflict as exc:
+        raise RequestError(409, str(exc)) from exc
+    return json_response(
+        {"request": reorg_request.as_dict(), "current_version": server.runtime.reorg.current_version()}
+    )
+
+
+def reorg_round_end(server: "Server", request: Request) -> Response:
+    return patrol_round_end(server, request)
+
+
+def reorg_list(server: "Server", request: Request) -> Response:
+    coordinator = server.runtime.reorg
+    confirmed = coordinator.last_confirmed()
+    return json_response(
+        {
+            "current_version": coordinator.current_version(),
+            "confirmed_version": 0 if confirmed is None else confirmed.version,
+            "versions": [layout.as_dict() for layout in coordinator.versions()],
+            "requests": [item.as_dict() for item in coordinator.requests()],
+        }
+    )
+
+
+def reorg_alarm_review(server: "Server", request: Request) -> Response:
+    """Re-check alarms against the layout that was in force when they were born."""
+
+    rt = server.runtime
+    coordinator = rt.reorg
+    sensor_id = request.query_field("sensor")
+    rows = []
+    for alarm in rt.env.alarms():
+        if sensor_id and alarm.sensor_id != sensor_id:
+            continue
+        rows.append(coordinator.review_alarm(alarm.as_dict()))
+    at = request.query_field("at")
+    payload: dict[str, object] = {"alarms": rows, "current_version": coordinator.current_version()}
+    if at:
+        effective = coordinator.layout_effective_at(at)
+        payload["version_effective_at"] = at
+        payload["effective_version"] = 0 if effective is None else effective.version
+    return json_response(payload)
+
+
+def reorg_layout(server: "Server", request: Request) -> Response:
+    raw_version = request.query_field("version")
+    if not raw_version.isdigit():
+        raise RequestError(400, "version is required")
+    version = int(raw_version)
+    layout = server.runtime.reorg.layout(version)
+    if layout is None:
+        raise RequestError(404, f"layout v{version} not found")
+    return json_response(layout.as_dict())
 
 
 def store_stats(server: "Server", request: Request) -> Response:

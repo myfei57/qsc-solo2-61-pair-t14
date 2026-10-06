@@ -12,7 +12,7 @@ from .metrics import Metrics
 from .pages import load_page, page_file, root_redirect
 from .routes import register_routes
 from .runtime import Runtime
-from .seed import seed_defaults
+from .seed import SEED_AT, seed_defaults
 
 
 class Server:
@@ -20,7 +20,17 @@ class Server:
 
     def __init__(self, store: Store, web_dir: str = "web") -> None:
         self.runtime = Runtime(store)
+        # Restore any durable layout before the seed, so seeded alarms are
+        # stamped with the persisted version; on a fresh store this is a no-op.
+        persisted = self.runtime.reorg.preload()
         seed_defaults(self.runtime)
+        if persisted:
+            self.runtime.reorg.bootstrap()
+        else:
+            # Capture the seeded wiring as the confirmed initial layout (v1).
+            # It is effective from the seed timestamp so historical as-of
+            # re-checks resolve seeded alarms against v1.
+            self.runtime.reorg.bootstrap(at=SEED_AT)
         self.web_dir = web_dir
         self.router = Router()
         self.metrics = Metrics()
