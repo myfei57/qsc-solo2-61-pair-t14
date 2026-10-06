@@ -32,6 +32,13 @@ class PatrolService:
             self._route = checkpoints(self._cabins)
             return list(self._route)
 
+    def install_route(self, route: list[Checkpoint]) -> list[Checkpoint]:
+        """Replace the route wholesale, as one rearrangement stage."""
+
+        with self._lock:
+            self._route = list(route)
+            return list(self._route)
+
     def check_in(self, cabin_id: str, at: str) -> CheckIn:
         check = CheckIn(cabin_id=cabin_id, at=at)
         with self._lock:

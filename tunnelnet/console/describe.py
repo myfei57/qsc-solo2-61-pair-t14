@@ -30,5 +30,6 @@ def collect(rt: "Runtime") -> dict[str, str]:
         "quota": rt.quota.describe(),
         "cables": rt.cables.describe(),
         "suppression": rt.suppression.describe(),
+        "rearrange": rt.rearrange.describe(),
         "audit": rt.audit.describe(),
     }

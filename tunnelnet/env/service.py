@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
 from typing import Protocol
 
 from tunnelnet.cabin import PartitionTable
@@ -18,6 +19,10 @@ class Filterer(Protocol):
         ...
 
 
+# Generation, partition and cabin an alarm belongs to when it is raised.
+Attribution = tuple[int, str, str]
+
+
 class Environment:
     """Samples sensors, filters them and routes alarms to a cabin."""
 
@@ -28,10 +33,31 @@ class Environment:
         self._sensor_partition: dict[str, str] = {}
         self._readings: dict[str, list[Reading]] = {}
         self._alarms: list[Alarm] = []
+        self._attribution: Callable[[str], Attribution] | None = None
+
+    def set_attribution_provider(self, provider: Callable[[str], Attribution]) -> None:
+        """Wire the rearrange coordinator that stamps every raised alarm."""
+
+        self._attribution = provider
 
     def bind_sensor_at(self, sensor_id: str, partition_id: str) -> None:
         self._sensor_partition[sensor_id] = partition_id
         self._readings.setdefault(sensor_id, [])
+
+    def bindings(self) -> dict[str, str]:
+        return dict(self._sensor_partition)
+
+    def rebind_all(self, bindings: dict[str, str]) -> None:
+        """Swap every sensor -> partition binding at once, keeping history."""
+
+        for sensor_id, partition_id in bindings.items():
+            if not sensor_id:
+                raise ValueError("sensor id is empty")
+            if not partition_id:
+                raise ValueError("partition id is empty")
+        self._sensor_partition = dict(bindings)
+        for sensor_id in bindings:
+            self._readings.setdefault(sensor_id, [])
 
     def sample(self, sensor_id: str, value: float, at: str) -> bool:
         """Record a reading and report whether it raised an alarm."""
@@ -60,8 +86,22 @@ class Environment:
         filtered = self._filter.filter(raw)
         if filtered < self._threshold:
             return False
-        self._alarms.append(Alarm(sensor_id=sensor_id, value=filtered))
+        generation, partition, cabin = self._stamp(sensor_id)
+        self._alarms.append(
+            Alarm(
+                sensor_id=sensor_id,
+                value=filtered,
+                generation=generation,
+                partition=partition,
+                cabin=cabin,
+            )
+        )
         return True
+
+    def _stamp(self, sensor_id: str) -> Attribution:
+        if self._attribution is not None:
+            return self._attribution(sensor_id)
+        return (0, self.partition_of(sensor_id), self.route_alarm(sensor_id))
 
     def threshold(self) -> float:
         return self._threshold

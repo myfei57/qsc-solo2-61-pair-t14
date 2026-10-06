@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import uuid
 from typing import TYPE_CHECKING
 
 from tunnelnet.audit import between, events, filter_records, last, most_recent
@@ -11,6 +12,7 @@ from tunnelnet.drain import Pit
 from tunnelnet.env import snapshot as env_snapshot
 from tunnelnet.fire import Detector
 from tunnelnet.ns import Stage, control_chain
+from tunnelnet.rearrange import RearrangeConflict, RearrangePlan
 from tunnelnet.reporting import audit_export, telemetry_export, to_csv
 from tunnelnet.reporting import store_export as store_csv_export
 from tunnelnet.store import export_all, export_kind, list_approvals, revoke_approval, summarize
@@ -312,11 +314,21 @@ def env_sample(server: "Server", request: Request) -> Response:
 
 
 def env_partition(server: "Server", request: Request) -> Response:
-    revision = server.runtime.env.repartition(
-        request.str_field("partition_id"), request.str_field("cabin_id")
+    """Legacy single-assignment repartition, now one atomic rearrangement."""
+
+    rt = server.runtime
+    receipt = rt.rearrange.submit(
+        RearrangePlan(
+            request_id=f"partition-{uuid.uuid4().hex}",
+            assignments={
+                request.str_field("partition_id"): request.str_field("cabin_id")
+            },
+        )
     )
+    if receipt.status == "rolled_back":
+        return json_response(receipt.as_dict(), status=500)
     return json_response(
-        {"revision": revision, "sensor_1_cabin": server.runtime.env.route_alarm("sensor-1")}
+        {"revision": rt.partitions.revision(), "sensor_1_cabin": rt.env.route_alarm("sensor-1")}
     )
 
 
@@ -548,6 +560,64 @@ def patrol_rebuild(server: "Server", request: Request) -> Response:
 def patrol_due(server: "Server", request: Request) -> Response:
     patrol = server.runtime.patrol
     return json_response({"due": patrol.set_due(request.str_field("cabin_id"), request.str_field("due"))})
+
+
+def _str_map(request: Request, name: str) -> dict[str, str]:
+    raw = request.payload.get(name, {})
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise RequestError(400, f"field {name} must be an object")
+    return {str(key): str(value) for key, value in raw.items()}
+
+
+def _receipt_response(receipt) -> Response:
+    status = 200 if receipt.status in ("committed", "reverted", "adopted", "unchanged") else 500
+    return json_response(receipt.as_dict(), status=status)
+
+
+def rearrange_state(server: "Server", request: Request) -> Response:
+    rearrange = server.runtime.rearrange
+    return json_response(
+        {"state": rearrange.state().as_dict(), "view": rearrange.current_view().as_dict()}
+    )
+
+
+def rearrange_submit(server: "Server", request: Request) -> Response:
+    plan = RearrangePlan(
+        request_id=request.str_field("request_id"),
+        assignments=_str_map(request, "assignments"),
+        bindings=_str_map(request, "bindings"),
+        base_generation=request.int_field("base_generation", 0),
+        at=request.str_field("at"),
+    )
+    try:
+        receipt = server.runtime.rearrange.submit(plan)
+    except RearrangeConflict as exc:
+        raise RequestError(409, str(exc)) from exc
+    return _receipt_response(receipt)
+
+
+def rearrange_revert(server: "Server", request: Request) -> Response:
+    receipt = server.runtime.rearrange.revert(request.str_field("request_id"))
+    return _receipt_response(receipt)
+
+
+def rearrange_history(server: "Server", request: Request) -> Response:
+    rt = server.runtime
+    return json_response(
+        {
+            "generations": [snapshot.as_dict() for snapshot in rt.rearrange.generations()],
+            "ledger": [receipt.as_dict() for receipt in rt.rearrange.ledger()],
+            "journal_records": rt.store.count("rearrange"),
+        }
+    )
+
+
+def rearrange_alarms(server: "Server", request: Request) -> Response:
+    rt = server.runtime
+    items = rt.rearrange.review_alarms(rt.env.alarms())
+    return json_response({"items": items, "count": len(items)})
 
 
 def cables_list(server: "Server", request: Request) -> Response:

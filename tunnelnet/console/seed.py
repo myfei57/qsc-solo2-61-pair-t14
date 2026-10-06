@@ -54,3 +54,4 @@ def seed_defaults(rt: Runtime) -> None:
     rt.cables.sample("cable-1", 47.0)
 
     rt.patrol.rebuild_route()
+    rt.rearrange.adopt_current("seed", SEED_AT)

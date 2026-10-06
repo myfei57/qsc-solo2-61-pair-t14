@@ -12,6 +12,7 @@ from tunnelnet.fire import FireService
 from tunnelnet.ns import Registry as NamespaceRegistry
 from tunnelnet.patrol import PatrolService
 from tunnelnet.quota import QuotaService
+from tunnelnet.rearrange import RearrangeCoordinator
 from tunnelnet.store import Store
 from tunnelnet.vent import VentService
 
@@ -41,3 +42,7 @@ class Runtime:
         self.power_book = PowerBook()
         self.quota = QuotaService(self.cabins, self.power_book)
         self.audit = AuditRegistry()
+        self.rearrange = RearrangeCoordinator(
+            self.cabins, self.partitions, self.env, self.patrol, store, self.audit
+        )
+        self.env.set_attribution_provider(self.rearrange.stamp_for)

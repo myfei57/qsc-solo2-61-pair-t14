@@ -76,5 +76,19 @@ def run_checks(rt: "Runtime") -> list[dict[str, str]]:
         }
     )
 
+    rearrange = rt.rearrange
+    drifted = rearrange.drifted()
+    inconsistent = rearrange.inconsistent_alarm_count()
+    checks.append(
+        {
+            "name": "rearrange",
+            "status": "warn" if drifted or inconsistent else "ok",
+            "detail": (
+                f"generation={rearrange.current_generation()} drifted={drifted} "
+                f"inconsistent_alarms={inconsistent}"
+            ),
+        }
+    )
+
     checks.append({"name": "audit", "status": "ok", "detail": f"records={rt.audit.count()}"})
     return checks

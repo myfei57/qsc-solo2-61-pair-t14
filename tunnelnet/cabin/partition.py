@@ -27,6 +27,19 @@ class PartitionTable:
             self._revision += 1
             return self._revision
 
+    def replace_all(self, mapping: dict[str, str]) -> int:
+        """Swap the whole mapping at once, as one rearrangement stage."""
+
+        for partition_id, cabin_id in mapping.items():
+            if not partition_id:
+                raise ValueError("partition id is empty")
+            if not cabin_id:
+                raise ValueError("cabin id is empty")
+        with self._lock:
+            self._mapping = dict(mapping)
+            self._revision += 1
+            return self._revision
+
     def cabin_of(self, partition_id: str) -> str:
         with self._lock:
             return self._mapping.get(partition_id, "")
